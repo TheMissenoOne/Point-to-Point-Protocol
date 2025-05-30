@@ -31,26 +31,37 @@
 // <www.state-machine.com/licensing>
 // <info@state-machine.com>
 //============================================================================
+#include "sinais.h"      // DPP Application interface
 #ifndef BSP_H_
 #define BSP_H_
 
 #define BSP_TICKS_PER_SEC 100U
 #define BUFLEN 512  //Max length of buffer
-#define PORTIN 8888   //The port on which to listen for incoming data
-#define PORTOUT 8889
+#define PORTIN 777  //The port on which to listen for incoming data
+#define PORTOUT 7777
 
-#define LCP_CODE_CONFIGURE_REQUEST 0x01
-#define LCP_CODE_CONFIGURE_ACK     0x02
-#define LCP_CODE_TERMINATE_REQUEST 0x05
+#define LCP_CODE_CONFIGURE_REQUEST    0x01  /**< Configure-Request     */  // :contentReference[oaicite:0]{index=0}
+#define LCP_CODE_CONFIGURE_ACK        0x02  /**< Configure-Ack         */  // :contentReference[oaicite:1]{index=1}
+#define LCP_CODE_PAYLOAD         0x0F  // pick an unused code
+#define LCP_CODE_PAYLOAD_ACK     0x10
 
 void BSP_init(int argc, char *argv[]);
 void BSP_start(void);
 void BSP_displayPaused(uint8_t paused);
 void BSP_displayPhilStat(uint8_t n, uint8_t st, char const *stat);
 void BSP_terminate(int16_t result);
+void sendMessage(const char *fmt, ...);
+void messageAck(uint8_t identifier);
 
 void BSP_randomSeed(uint32_t seed); // random seed
 uint32_t BSP_random(void);          // pseudo-random generator
+void send_up(void);
+void send_configure_request(void);
+void send_configure_ack(uint8_t identifier);
+extern void send_terminate_ack(const LcpPacket *received);
+void send_terminate_request(void);
+void assert_failed(char const *const module, int_t const id); // prototype
+
 
 void bsp_on();
 void bsp_off();
@@ -58,4 +69,5 @@ void BSP_forno(int i);
 void BSP_luz(int i);
 void BSP_digito(int seg, int num);
 
+void BSP_sendPPPRaw(uint8_t code, const uint8_t *payload, uint16_t payload_len);
 #endif // BSP_H_

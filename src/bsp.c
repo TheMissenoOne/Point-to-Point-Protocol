@@ -40,285 +40,269 @@
 #include <unistd.h>
 #include <string.h>
 #include <windows.h>
-//#include <pthread.h>
+#include <pthread.h>
 #include "safe_std.h" // portable "safe" <stdio.h>/<string.h> facilities
+#define MAX_PAYLOAD_BLOCKS  20
 
 Q_DEFINE_THIS_FILE
 
 // Local objects -------------------------------------------------------------
 static uint32_t l_rnd; // random seed
-const char *ppp_signals[] = {
-	"UP",
-	"OPEN",
-	"DOWN",
-	"CLOSE",
-    "RCR+",
-    "RCR-",
-    "RCA",
-    "RCN",
-    "RTR",
-    "TO+",
-    "TO-"
-};
+const char *ppp_signals[] = { "UP", "OPEN", "DOWN", "CLOSE", "RCR+", "RCR-",
+		"RCA", "RCN", "RTR", "TO+", "TO-" };
 
 static uint32_t l_rnd;
 struct sockaddr_in si_other;
-int s;
+static SOCKET s;
+
 WSADATA wsaData;
 LPHOSTENT lpHostEntry;
-//pthread_t tudpServer;
+pthread_t tudpServer;
 
-// Send PPP signal over UDP
-static void sendPPPSig(int idx) {
+extern int build_lcp_packet(LcpPacket *pkt, uint8_t code, uint8_t identifier);
 
-	int slen = (int) sizeof(si_other);
-	if (s != -1){
-		sendto(s, ppp_signals[idx], (int) strlen(ppp_signals[idx]), 0, (struct sockaddr*) &si_other, slen);
-		printf("PPP signal sent: %s\n", ppp_signals[idx]);
-		fflush(stdout);
-	}
-}
-
-void send_lcp_packet(const char* ip, uint16_t port, LcpPacket* packet, int packet_len) {
-
-	int slen = (int) sizeof(si_other);
-	if (s != -1){
-		sendto(s, packet, packet_len, 0, (struct sockaddr*) &si_other, slen);
-
-		printf("Packet LCD\n");
-		printf("--------------------\n");
-		print_packet_hex(packet, packet_len);
-	}
+void LCPEvt_init(LCPEvt *const me, QSignal sig, uint8_t identifier) {
+	// inicializa o evento-base
+	QEvt_init(&me->super, sig);
+	// guarda o identificador de pacote
+	me->identifier = identifier;
 }
 
 // UDP server thread
-DWORD WINAPI udpServer(void *arg) {
 
-	struct sockaddr_in si_other;
-	struct sockaddr_in si_me;
-	int slen = (int) sizeof(si_other);
+int BSP_recvPPPRaw(uint8_t *buffer, uint16_t max_len) {
+	char tmp[600];
+	struct sockaddr_in from;
+	int fromlen = sizeof(from);
+
+	int len = recvfrom(s, tmp, sizeof(tmp), 0, (struct sockaddr*) &from,
+			&fromlen);
+	if (len == SOCKET_ERROR) {
+		return -WSAGetLastError();  // negative on error
+	}
+	// copy up to max_len
+	int copy = (len < max_len) ? len : max_len;
+	memcpy(buffer, tmp, copy);
+
+	return copy;
+}
+
+static void* udpServer(void *arg) {
+	uint8_t buf[BUFLEN];
 	int recv_len;
-	char buf[BUFLEN];
 
-	int ss = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (ss != -1) {
-
-	memset((char *) &si_me, 0, sizeof(si_me));
-	si_me.sin_family = AF_INET;
-	si_me.sin_port = htons(PORTIN);
-	si_me.sin_addr.s_addr = htonl(INADDR_ANY);
-
-	if (bind(ss, (struct sockaddr *) &si_me, sizeof(si_me)) != -1) {
+	(void) arg;  // unused
 
 	while (1) {
-		memset(buf, 0, BUFLEN);
-		if ((recv_len = recvfrom(ss, buf, BUFLEN, 0, (struct sockaddr*) &si_other, &slen)) != -1) {
-
-        	printf("Recebido: %s\n", buf);
-        	fflush(stdout);
-			buf[recv_len] = '\0';
-
-			int sinal = 0;
-			for (int i = 0; i < 11; i++)
-			{
-			    if (strncmp(buf, ppp_signals[i], strlen(ppp_signals[i])) == 0) {
-
-			    sinal = 1;
-
-				// Posta evento conforme o código acima
-				switch (i){
-					case 0: {
-					    PPPEvt *evt = Q_NEW(PPPEvt, UP_SIG, NULL);
-					    QACTIVE_PUBLISH((QEvt *)evt, NULL);
-					    break;
-					}
-					case 1: {
-					    PPPEvt *evt = Q_NEW(PPPEvt, DOWN_SIG, NULL);
-					    QACTIVE_PUBLISH((QEvt *)evt, NULL);
-					    break;
-					}
-					case 2: {
-					    PPPEvt *evt = Q_NEW(PPPEvt, OPEN_SIG, NULL);
-					    QACTIVE_PUBLISH((QEvt *)evt, NULL);
-					    break;
-					}
-					case 3: {
-					    PPPEvt *evt = Q_NEW(PPPEvt, CLOSE_SIG, NULL);
-					    QACTIVE_PUBLISH((QEvt *)evt, NULL);
-					    break;
-					}
-					case 4: {
-					    PPPEvt *evt = Q_NEW(PPPEvt, RCR_PLUS_SIG, NULL);
-					    QACTIVE_PUBLISH((QEvt *)evt, NULL);
-					    break;
-					}
-					case 5: {
-					    PPPEvt *evt = Q_NEW(PPPEvt, RCR_MINUS_SIG, NULL);
-					    QACTIVE_PUBLISH((QEvt *)evt, NULL);
-					    break;
-					}
-					case 6: {
-					    PPPEvt *evt = Q_NEW(PPPEvt, RCA_SIG, NULL);
-					    QACTIVE_PUBLISH((QEvt *)evt, NULL);
-					    break;
-					}
-					case 7: {
-						PPPEvt *evt = Q_NEW(PPPEvt, RCN_SIG, NULL);
-						QACTIVE_PUBLISH((QEvt *)evt, NULL);
-						break;
-					}
-					case 8: {
-						PPPEvt *evt = Q_NEW(PPPEvt, RTR_SIG, NULL);
-						QACTIVE_PUBLISH((QEvt *)evt, NULL);
-						break;
-					}
-					case 9: {
-						PPPEvt *evt = Q_NEW(PPPEvt, RTR_SIG, NULL);
-						QACTIVE_PUBLISH((QEvt *)evt, NULL);
-						break;
-					}
-					case 10: {
-						PPPEvt *evt = Q_NEW(PPPEvt, TO_PLUS_SIG, NULL);
-						QACTIVE_PUBLISH((QEvt *)evt, NULL);
-						break;
-					}
-					case 11: {
-						PPPEvt *evt = Q_NEW(PPPEvt, TO_MINUS_SIG, NULL);
-						QACTIVE_PUBLISH((QEvt *)evt, NULL);
-						break;
-					}
-				}
-    		}
-    	}
-
-		LcpPacket *pkt = (LcpPacket *) buf;
-
-		if(!sinal)
-		{
-			switch (pkt->code) {
-			    case LCP_CODE_CONFIGURE_REQUEST: {
-			    	LCPEvt *lcp_request = Q_NEW(LCPEvt, RCR_PLUS_SIG, pkt->identifier);
-				    QACTIVE_PUBLISH((QEvt *)lcp_request, NULL);
-			        break;
-			    }
-			    case LCP_CODE_CONFIGURE_ACK:{
-			    	LCPEvt *lcp_request_ack = Q_NEW(LCPEvt, RCA_SIG, pkt->identifier);
-			    	QACTIVE_PUBLISH((QEvt *)lcp_request_ack, NULL);
-			        break;
-			    }
-			    case LCP_CODE_TERMINATE_REQUEST:{
-			    	LCPEvt *lcp_request_terminate = Q_NEW(LCPEvt, RCN_SIG, pkt->identifier);
-			    	QACTIVE_PUBLISH((QEvt *)lcp_request_terminate, NULL);
-			        break;
-			    }
-			    default:
-			        printf("Código desconhecido: 0x%02X\n", pkt->identifier);
-			        break;
-			}
-
-			sinal = 0;
+		// 1) block waiting for the next PPP frame
+		recv_len = BSP_recvPPPRaw(buf, sizeof(buf));
+		if (recv_len <= 0) {
+			// error or no data
+			continue;
 		}
-    }
-}}}
-return NULL;
+
+		// 2) dump the raw frame
+		printf("[BSP] Frame recebido (%d bytes)\n", recv_len);
+		for (int i = 0; i < recv_len; ++i) {
+			printf("%02X ", buf[i]);
+		}
+		printf("\n");
+
+		// 3) sanity‐check HDLC flags/address/control/protocol
+		if (recv_len < 6 || buf[0] != 0x7E || buf[recv_len - 1] != 0x7E) {
+			printf("Frame inválido (flags incorretas ou muito curto)\n");
+			continue;
+		}
+		size_t pos = 1;
+		if (buf[pos++] != 0xFF || buf[pos++] != 0x03) {
+			printf("Endereço/controle inválido\n");
+			continue;
+		}
+		uint8_t proto_hi = buf[pos++];
+		uint8_t proto_lo = buf[pos++];
+		uint16_t proto = ((uint16_t) proto_hi << 8) | proto_lo;
+		if (proto != 0xC021) {
+			printf("Protocolo não suportado: 0x%04X\n", proto);
+			continue;
+		}
+
+		size_t payload_len = (size_t) recv_len - pos - 3;
+		if (payload_len < 4) {
+			printf("Payload LCP muito curto\n");
+			continue;
+		}
+
+		//  extraímos o cabeçalho LCP do payload
+
+		// code, id, length
+		uint8_t code = buf[pos++];
+		uint8_t identifier = buf[pos++];
+		uint8_t len_hi = buf[pos++];
+		uint8_t len_lo = buf[pos++];
+		uint16_t length = ((uint16_t) len_hi << 8) | len_lo;
+		size_t data_len = length < 4 ? 0 : length - 4;
+		const uint8_t *data = &buf[pos];
+
+		fflush(stdout);
+
+		// processa conforme o código LCP
+		switch (code) {
+		case LCP_CODE_CONFIGURE_REQUEST: {
+			LCPEvt *e = (LCPEvt*) QF_newX_(sizeof(LCPEvt),
+			QF_NO_MARGIN, RCR_PLUS_SIG);
+			if (e != NULL) {
+				LCPEvt_init(e, RCR_PLUS_SIG, identifier);
+				QACTIVE_PUBLISH((QEvt* )e, NULL);
+			}
+			break;
+		}
+		case LCP_CODE_CONFIGURE_ACK: {
+			LCPEvt *e = (LCPEvt*) QF_newX_(sizeof(LCPEvt),
+			QF_NO_MARGIN, RCA_SIG);
+			if (e != NULL) {
+				LCPEvt_init(e, RCA_SIG, identifier);
+				QACTIVE_PUBLISH((QEvt* )e, NULL);
+			}
+			break;
+		}
+		case LCP_CODE_PAYLOAD: {
+			// calculate exact size of the PayloadEvt including the actual payload
+			size_t evtSize = sizeof(PayloadEvt)
+					- sizeof(((PayloadEvt*) 0)->data)  // overhead
+			+ data_len;
+			printf("[BSP] Mensagem recebida (id=%u, len=%zu): ", identifier,
+					data_len);
+//			printf("%.*s\n", (int)data_len, (char*)data);
+//			printf("[BSP] PayloadEvt: total=%zu, data_len=%u\n", evtSize, data_len);
+			fflush(stdout);
+			PayloadEvt *e = (PayloadEvt*) QF_newX_(evtSize, QF_NO_MARGIN,
+					PL_SIG);
+			if (e != NULL) {
+				QEvt_init(&e->super, PL_SIG);
+				e->identifier = identifier;
+				e->length = data_len;
+				memcpy(e->data, data, data_len);
+				QACTIVE_POST(AO_PPP, (QEvt* )e, BSP_PRIO); // <<< direct post to PPP
+			}
+			break;
+		}
+		case LCP_CODE_PAYLOAD_ACK: {
+			LCPEvt *e = (LCPEvt*) QF_newX_(sizeof(LCPEvt),
+			QF_NO_MARGIN, PLA_SIG);
+			if (e != NULL) {
+				LCPEvt_init(e, PLA_SIG, identifier);
+				QACTIVE_PUBLISH((QEvt* )e, NULL);
+			}
+			break;
+		}
+		default: {
+			printf("Código LCP desconhecido: 0x%02X\n", code);
+			break;
+		}
+		}
+	}
+
+	return NULL;
+}
+
+void BSP_startUDPServer(void) {
+	printf("[BSP] Inicializando UDP Server \n");
+	fflush(stdout);
+	pthread_create(&tudpServer, NULL, udpServer, NULL);
 }
 
 //============================================================================
-Q_NORETURN Q_onError(char const * const module, int_t const id) {
-    QS_ASSERTION(module, id, 10000U); // report assertion to QS
-    QF_onCleanup();
-    QS_EXIT();
-    exit(-1);
+Q_NORETURN Q_onError(char const *const module, int_t const id) {
+	QS_ASSERTION(module, id, 10000U); // report assertion to QS
+	QF_onCleanup();
+	QS_EXIT();
+	exit(-1);
 }
 //............................................................................
 
-void assert_failed(char const * const module, int_t const id); // prototype
-void assert_failed(char const * const module, int_t const id) {
-    Q_onError(module, id);
+void assert_failed(char const *const module, int_t const id) {
+	Q_onError(module, id);
 }
 
 //============================================================================
 void BSP_init(int argc, char *argv[]) {
-    Q_UNUSED_PAR(argc);
-    Q_UNUSED_PAR(argv);
+	Q_UNUSED_PAR(argc);
+	Q_UNUSED_PAR(argv);
 
-    BSP_randomSeed(1234U);
+	WSAStartup(MAKEWORD(2, 1), &wsaData);
 
-    // initialize the QS software tracing
-    if (QS_INIT((argc > 1) ? argv[1] : (void *)0) == 0U) {
-        Q_ERROR();
-    }
+// create the one-and-only UDP socket:
+	s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (s == INVALID_SOCKET) {
+		printf("socket() falhou: %d\n", WSAGetLastError());
+		Q_ERROR();
+	}
 
-    QS_OBJ_DICTIONARY(&l_clock_tick);
+// bind it for receive on PORTIN:
+	struct sockaddr_in me = { 0 };
+	me.sin_family = AF_INET;
+	me.sin_port = htons(PORTIN);
+	me.sin_addr.s_addr = htonl(INADDR_ANY);
 
-    QS_USR_DICTIONARY(PHILO_STAT);
-    QS_USR_DICTIONARY(PAUSED_STAT);
+	if (bind(s, (struct sockaddr*) &me, sizeof(me)) == SOCKET_ERROR) {
+		printf("bind() falhou: %d\n", WSAGetLastError());
+		Q_ERROR();
+	}
 
-    QS_ONLY(produce_sig_dict());
-
-    // setup the QS filters...
-    QS_GLB_FILTER(QS_ALL_RECORDS);
-    QS_GLB_FILTER(-QS_QF_TICK);    // exclude the tick record
-
-	WSAStartup(MAKEWORD(2,1),&wsaData);
-    lpHostEntry = gethostbyname("127.0.0.1");
-	s=socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	memset((char *) &si_other, 0, sizeof(si_other));
+// set up si_other (the peer address/port) for sendto():
+	lpHostEntry = gethostbyname("127.0.0.1");
 	si_other.sin_family = AF_INET;
 	si_other.sin_port = htons(PORTOUT);
-	si_other.sin_addr = *((LPIN_ADDR)*lpHostEntry->h_addr_list);
-	//pthread_create(&tudpServer,NULL,udpServer,NULL);
+	si_other.sin_addr = *((LPIN_ADDR) * lpHostEntry->h_addr_list);
 
-	HANDLE tudpServer = CreateThread(
-	        NULL,       // atributos padrão
-	        0,          // tamanho do stack (0 = padrão)
-	        udpServer,  // função da thread
-	        NULL,       // parâmetro da função
-	        0,          // flags
-	        NULL        // ID da thread (opcional)
-	    );
+	BSP_startUDPServer();
+
 }
 //............................................................................
 void BSP_start(void) {
-    // initialize event pools
-    static QF_MPOOL_EL(PPPEvt) smlPoolSto[POOLSIZE];
-    QF_poolInit(smlPoolSto, sizeof(smlPoolSto), sizeof(smlPoolSto[0]));
+	// 1) PPPEvt pool
+	static QF_MPOOL_EL(PPPEvt)
+	smlPoolSto[POOLSIZE];
+	QF_poolInit(smlPoolSto, sizeof(smlPoolSto), sizeof(smlPoolSto[0]));
 
-    // initialize publish-subscribe
-    static QSubscrList subscrSto[MAX_PUB_SIG];
-    QActive_psInit(subscrSto, Q_DIM(subscrSto));
+	// 2) PayloadEvt pool
+	static QF_MPOOL_EL(PayloadEvt)
+	payloadPoolSto[MAX_PAYLOAD_BLOCKS];
+	QF_poolInit(payloadPoolSto, sizeof(payloadPoolSto),
+			sizeof(payloadPoolSto[0]));
 
-    // instantiate and start AOs/threads...
-    static QEvtPtr l_microQueueSto[QUEUESIZE];
-    PPP_ctor();
+	// 3) (oops) publish‐subscribe init **twice**
+	static QSubscrList subscrSto[MAX_PUB_SIG];
+	QActive_psInit(subscrSto, Q_DIM(subscrSto));
 
-    QActive_start(AO_PPP,
-        7U,            // QP prio. of the AO
-		l_microQueueSto,           // event queue storage
-        Q_DIM(l_microQueueSto),    // queue length [events]
-        (void *)0, 0U,           // no stack storage
-        (void *)0);
+	// 4) start the AO
+	static QEvtPtr l_microQueueSto[QUEUESIZE];
+	PPP_ctor();
 
-	sendPPPSig(0); // Send UP// no initialization param
+	QActive_start(AO_PPP, 7U,            // QP prio. of the AO
+			l_microQueueSto,           // event queue storage
+			Q_DIM(l_microQueueSto),    // queue length [events]
+			(void*) 0, 0U,           // no stack storage
+			(void*) 0);
 }
 //............................................................................
 void BSP_terminate(int16_t result) {
-    (void)result;
-    QF_stop(); // stop the main "ticker thread"
+	(void) result;
+	QF_stop(); // stop the main "ticker thread"
 }
 
 //............................................................................
 uint32_t BSP_random(void) { // a very cheap pseudo-random-number generator
-    // "Super-Duper" Linear Congruential Generator (LCG)
-    // LCG(2^32, 3*7*11*13*23, 0, seed)
-    //
-    uint32_t rnd = l_rnd * (3U*7U*11U*13U*23U);
-    l_rnd = rnd;
-    return rnd >> 8;
+// "Super-Duper" Linear Congruential Generator (LCG)
+// LCG(2^32, 3*7*11*13*23, 0, seed)
+//
+	uint32_t rnd = l_rnd * (3U * 7U * 11U * 13U * 23U);
+	l_rnd = rnd;
+	return rnd >> 8;
 }
 //............................................................................
 void BSP_randomSeed(uint32_t seed) {
-    l_rnd = seed;
+	l_rnd = seed;
 }
 
 //============================================================================
@@ -327,19 +311,19 @@ void BSP_randomSeed(uint32_t seed) {
 #endif
 
 void QF_onStartup(void) {
-    QF_consoleSetup();
+	QF_consoleSetup();
 
 #if CUST_TICK
     // disable the standard clock-tick service by setting tick-rate to 0
     QF_setTickRate(0U, 10U); // zero tick-rate / ticker thread prio.
 #else
-    QF_setTickRate(BSP_TICKS_PER_SEC, 50); // desired tick rate/ticker-prio
+	QF_setTickRate(BSP_TICKS_PER_SEC, 50); // desired tick rate/ticker-prio
 #endif
 }
 //............................................................................
 void QF_onCleanup(void) {
-    printf("\n%s\n", "Bye! Bye!");
-    QF_consoleCleanup();
+	printf("\n%s\n", "Bye! Bye!");
+	QF_consoleCleanup();
 }
 //............................................................................
 
@@ -358,18 +342,18 @@ void QF_onClockTick(void) {
     tv.tv_usec = (1000000/BSP_TICKS_PER_SEC);
     select(0, NULL, NULL, NULL, &tv); // block for the timevalue
 #endif
-    QTIMEEVT_TICK_X(0U, &l_clock_tick); // process time events at rate 0
-    QS_RX_INPUT(); // handle the QS-RX input
-    QS_OUTPUT();   // handle the QS output
-    switch (QF_consoleGetKey()) {
-        case '\33': { // ESC pressed?
-            BSP_terminate(0);
-            break;
-        }
-        default: {
-            break;
-        }
-    }
+	QTIMEEVT_TICK_X(0U, &l_clock_tick); // process time events at rate 0
+	QS_RX_INPUT(); // handle the QS-RX input
+	QS_OUTPUT();   // handle the QS output
+	switch (QF_consoleGetKey()) {
+	case '\33': { // ESC pressed?
+		BSP_terminate(0);
+		break;
+	}
+	default: {
+		break;
+	}
+	}
 }
 //============================================================================
 #ifdef Q_SPY // define QS callbacks
@@ -386,52 +370,158 @@ void QS_onCommand(uint8_t cmdId,
 }
 #endif // Q_SPY
 
-int build_lcp_packet(LcpPacket* packet, uint8_t code, uint8_t identifier) {
+int build_lcp_packet(LcpPacket *packet, uint8_t code, uint8_t identifier) {
 
-    packet->code = code;
-    packet->identifier = identifier;
-    packet->length = htons(4); // 4 bytes de cabeçalho + opções
+	packet->code = code;
+	packet->identifier = identifier;
+	packet->length = htons(4); // 4 bytes de cabeçalho + opções
 
-    return 4; // tamanho total do pacote
+	return 4; // tamanho total do pacote
 }
 
-void send_up()
-{
-	sendPPPSig(0);
+/// Função muito simples de CRC-16-IBM (pode trocar por outra)
+static uint16_t crc16(const uint8_t *buf, size_t len) {
+	uint16_t crc = 0xFFFF;
+	while (len--) {
+		crc ^= *buf++ << 8;
+		for (int i = 0; i < 8; ++i) {
+			if (crc & 0x8000)
+				crc = (crc << 1) ^ 0x1021;
+			else
+				crc <<= 1;
+		}
+	}
+	return crc;
 }
 
-void send_configure_request() {
-	LcpPacket pkt;
+void BSP_sendPPPRaw(uint8_t code, const uint8_t *payload, uint16_t payload_len) {
+	uint8_t frame[600];
+	size_t pos = 0;
 
-	int pkt_len = build_lcp_packet(&pkt, 0x01, 42); // 0x01 = Configure-Request
+	// 1) Flag de início
+	frame[pos++] = 0x7E;
 
-	send_lcp_packet("127.0.0.1", PORTOUT, &pkt, pkt_len);
+	// 2) Address
+	frame[pos++] = 0xFF;
 
-    printf("Configure Request (LCP) enviado\n");
+	// 3) Control
+	frame[pos++] = 0x03;
+
+	// 4) Protocol (big-endian). Aqui usamos LCP = 0xC021
+	frame[pos++] = 0xC0;
+	frame[pos++] = 0x21;
+
+	// 5) Code (1 byte) + Payload
+	frame[pos++] = code;
+	if (payload_len > 0 && payload != NULL) {
+		memcpy(&frame[pos], payload, payload_len);
+		pos += payload_len;
+	}
+
+	// 6) FCS (CRC-16). Aplica sobre Address..(Code+Payload)
+	//    total bytes under FCS = 1(addr) + 1(ctrl) + 2(proto) + 1(code) + payload_len
+	int fcs = crc16(&frame[1], 1 + 1 + 2 + 1 + payload_len);
+	frame[pos++] = (uint8_t) ((fcs >> 8) & 0xFF);
+	frame[pos++] = (uint8_t) (fcs & 0xFF);
+
+	// 7) Flag de fim
+	frame[pos++] = 0x7E;
+
+	// envia via UDP
+	int sent = sendto(s, (const char*) frame,  // data buffer
+			(int) pos,             // length
+			0,                    // flags
+			(struct sockaddr*) &si_other, (int) sizeof(si_other));
+	if (sent == SOCKET_ERROR) {
+		int err = WSAGetLastError();
+		printf("[BSP] Erro no sendto: %d\n", err);
+	}
+
+	// Debug print of the frame
+	printf("[BSP] PPP frame enviado (%zu bytes):\n    ", pos);
+	for (size_t i = 0; i < pos; ++i) {
+		printf("%02X ", frame[i]);
+	}
+	printf("\n");
 }
 
-void send_configure_ack(LcpPacket *received) {
+void sendMessage(const char *fmt, ...) {
+	// 1) format the text payload
+	char text[256];
+	va_list va;
+	va_start(va, fmt);
+	int len = vsnprintf(text, sizeof(text), fmt, va);
+	va_end(va);
+	if (len <= 0) {
+		return;              // nothing to send
+	}
+	if (len > 250)
+		len = 250; // leave room for header
 
-	LcpPacket ack_packet;
+	// 2) bump the identifier (wrap at 255→1)
+	static uint8_t lcp_payload_id = 0;
+	lcp_payload_id = (lcp_payload_id == 255) ? 1 : (lcp_payload_id + 1);
 
-    ack_packet.code = LCP_CODE_CONFIGURE_ACK;
-    ack_packet.identifier = received->identifier;
-    ack_packet.length = received->length;
+	// 3) build an LCP header + data buffer
+	uint8_t buffer[4 + sizeof(text)];
+	uint16_t total_len = (uint16_t) (4 + len);
+	buffer[0] = LCP_CODE_PAYLOAD;         // 0x0F
+	buffer[1] = lcp_payload_id;           // new identifier
+	buffer[2] = (uint8_t) (total_len >> 8);
+	buffer[3] = (uint8_t) (total_len & 0xFF);
+	memcpy(&buffer[4], text, len);
 
-	send_lcp_packet("127.0.0.1", PORTOUT, &ack_packet, ack_packet.length );
+	// 4) send the framed packet
+	BSP_sendPPPRaw(LCP_CODE_PAYLOAD, buffer + 1, (uint16_t) (3 + len));
+	//               ^^^^^^^^^^^^^^^
+	// we pass “identifier+length+data” as the payload,
+	// since BSP_sendPPPRaw already emits the code byte separately
 
-    printf("Configure Request ACK (LCP) enviado\n");
+	printf("[BSP] Enviado payload (id=%u, len=%u): %.*s\n", lcp_payload_id, len,
+			len, text);
 }
 
-// FUnção para imprmir qualquer struct
-void print_packet_hex(const void* packet, size_t length) {
-    const unsigned char* bytes = (const unsigned char*)packet;
-    printf("Packet (%zu bytes):\n", length);
-    for (size_t i = 0; i < length; ++i) {
-        printf("%02X ", bytes[i]);
-        if ((i + 1) % 16 == 0) printf("\n");
-    }
-    if (length % 16 != 0) printf("\n");
-	fflush(stdout);
+// Send a “payload‐ack” for a given identifier
+
+// Send an arbitrary fully‐built LCP packet via the old send_lcp_packet
+// (you can drop this if you now always use BSP_sendPPPRaw directly)
+void send_lcp_packet(const char *ip, uint16_t port, LcpPacket *packet,
+		int packet_len) {
+	(void) ip;
+	(void) port; // we assume BSP_init already set si_other
+	BSP_sendPPPRaw(packet->code, (const uint8_t*) &packet->identifier,
+			ntohs(packet->length) - 1);
+	// note: we subtract 1 because code byte is passed separately
+}
+
+void messageAck(uint8_t identifier) {
+	LcpPacket ack;
+	ack.code = LCP_CODE_PAYLOAD_ACK;
+	ack.identifier = identifier;
+	ack.length = htons(4);
+	send_lcp_packet("127.0.0.1", PORTOUT, &ack, sizeof(ack));
+	printf("[BSP] LCP Payload‐Ack enviado (id=%u)\n", identifier);
+}
+
+// Send a Configure‐Request (you’ll want to pass real options here)
+void send_configure_request(void) {
+	uint8_t header[4];
+	uint16_t total_len = htons(4);
+	header[0] = LCP_CODE_CONFIGURE_REQUEST;
+	header[1] = 42;          // or your chosen identifier
+	memcpy(&header[2], &total_len, 2);
+
+	BSP_sendPPPRaw(LCP_CODE_CONFIGURE_REQUEST, &header[1], 3);
+
+	printf("Configure-Request Enviado\n");
+}
+
+void send_configure_ack(uint8_t identifier) {
+	LcpPacket ack;
+	ack.code = LCP_CODE_CONFIGURE_ACK;
+	ack.identifier = identifier;
+	ack.length = htons(4);
+	send_lcp_packet("127.0.0.1", PORTOUT, &ack, sizeof(ack));
+	printf("Configure Ack Enviado [id=%u]\n", identifier);
 }
 
